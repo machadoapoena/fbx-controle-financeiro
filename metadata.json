@@ -1,0 +1,6 @@
+{
+  "name": "Controle Financeiro",
+  "description": "Sistema moderno de controle financeiro com fluxo de entradas e saídas, categorias personalizáveis, gráficos mensais e exportação em PDF, com painel administrativo seguro.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

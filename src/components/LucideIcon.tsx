@@ -1,0 +1,79 @@
+import React from "react";
+import {
+  DollarSign,
+  Utensils,
+  Home,
+  Car,
+  Activity,
+  Sparkles,
+  HelpCircle,
+  ShoppingBag,
+  GraduationCap,
+  Gift,
+  TrendingUp,
+  Briefcase,
+  TrendingDown,
+  Plus,
+  Edit,
+  Trash2,
+  Lock,
+  Unlock,
+  FileDown,
+  Calendar,
+  X,
+  User,
+  CreditCard,
+  ChevronDown,
+  Filter,
+  Check,
+  LogOut,
+  Settings,
+  AlertTriangle,
+  Building,
+  FileText
+} from "lucide-react";
+
+const iconMap: Record<string, React.ComponentType<any>> = {
+  DollarSign,
+  Utensils,
+  Home,
+  Car,
+  Activity,
+  Sparkles,
+  HelpCircle,
+  ShoppingBag,
+  GraduationCap,
+  Gift,
+  TrendingUp,
+  Briefcase,
+  TrendingDown,
+  Plus,
+  Edit,
+  Trash2,
+  Lock,
+  Unlock,
+  FileDown,
+  Calendar,
+  X,
+  User,
+  CreditCard,
+  ChevronDown,
+  Filter,
+  Check,
+  LogOut,
+  Settings,
+  AlertTriangle,
+  Building,
+  FileText
+};
+
+interface LucideIconProps extends React.ComponentPropsWithoutRef<"svg"> {
+  name: string;
+  className?: string;
+  size?: number;
+}
+
+export default function LucideIcon({ name, className = "", size = 20, ...props }: LucideIconProps) {
+  const IconComponent = iconMap[name] || HelpCircle;
+  return <IconComponent className={className} size={size} {...props} />;
+}
