@@ -779,7 +779,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 md:px-8 mt-8 space-y-8" id="main-content">
 
         {/* Firebase Migration Banner (when user has existing spreadsheet/local data and Firestore needs migration) */}
-        {showMigrationBanner && (
+        {showMigrationBanner && isAdmin && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -847,80 +847,84 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right: Actions */}
+            {/* Right: Actions (Strictly for Admin) */}
             <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end">
-              {/* Migration Action Button */}
-              <button
-                onClick={() => setIsFirebaseMigrationOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-[#009d7a] hover:from-emerald-700 hover:to-[#008264] text-white text-xs font-bold rounded-lg shadow-xs hover:shadow-sm transition-all cursor-pointer"
-                title="Migrar dados da planilha ou do painel para o Firestore"
-              >
-                <LucideIcon name="UploadCloud" size={13} />
-                <span>Migrar Planilha para o Firebase</span>
-              </button>
+              {isAdmin ? (
+                <>
+                  {/* Migration Action Button */}
+                  <button
+                    onClick={() => setIsFirebaseMigrationOpen(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-[#009d7a] hover:from-emerald-700 hover:to-[#008264] text-white text-xs font-bold rounded-lg shadow-xs hover:shadow-sm transition-all cursor-pointer"
+                    title="Migrar dados da planilha ou do painel para o Firestore"
+                  >
+                    <LucideIcon name="UploadCloud" size={13} />
+                    <span>Migrar Planilha para o Firebase</span>
+                  </button>
 
-              {googleUser && googleSpreadsheetId && (
-                <a
-                  href={`https://docs.google.com/spreadsheets/d/${googleSpreadsheetId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
-                >
-                  <LucideIcon name="Table" size={12} className="text-emerald-600" />
-                  <span>Planilha Google</span>
-                  <LucideIcon name="ExternalLink" size={11} className="text-slate-400" />
-                </a>
-              )}
+                  {googleUser && googleSpreadsheetId && (
+                    <a
+                      href={`https://docs.google.com/spreadsheets/d/${googleSpreadsheetId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                    >
+                      <LucideIcon name="Table" size={12} className="text-emerald-600" />
+                      <span>Planilha Google</span>
+                      <LucideIcon name="ExternalLink" size={11} className="text-slate-400" />
+                    </a>
+                  )}
 
-              {googleUser ? (
-                <div className="flex items-center gap-2">
-                  {/* Google Sheets Sync Badge */}
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
-                    {syncStatus === "syncing" && (
-                      <>
-                        <motion.div
-                          animate={{ rotate: 360 }}
-                          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                          className="text-amber-500 flex items-center justify-center"
-                        >
-                          <LucideIcon name="RefreshCw" size={12} />
-                        </motion.div>
-                        <span className="text-[10px] font-bold text-amber-600">Sincronizando...</span>
-                      </>
-                    )}
-                    {syncStatus === "success" && (
-                      <>
-                        <LucideIcon name="CheckCircle2" size={12} className="text-emerald-500" />
-                        <span className="text-[10px] font-bold text-emerald-600">Planilha Conectada</span>
-                      </>
-                    )}
-                    {syncStatus === "error" && (
-                      <div className="flex items-center gap-1.5" title={syncError || undefined}>
-                        <LucideIcon name="AlertCircle" size={12} className="text-rose-500" />
-                        <span className="text-[10px] font-bold text-rose-600 truncate max-w-[120px]">
-                          {syncError || "Erro Sinc."}
-                        </span>
+                  {googleUser ? (
+                    <div className="flex items-center gap-2">
+                      {/* Google Sheets Sync Badge */}
+                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
+                        {syncStatus === "syncing" && (
+                          <>
+                            <motion.div
+                              animate={{ rotate: 360 }}
+                              transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                              className="text-amber-500 flex items-center justify-center"
+                            >
+                              <LucideIcon name="RefreshCw" size={12} />
+                            </motion.div>
+                            <span className="text-[10px] font-bold text-amber-600">Sincronizando...</span>
+                          </>
+                        )}
+                        {syncStatus === "success" && (
+                          <>
+                            <LucideIcon name="CheckCircle2" size={12} className="text-emerald-500" />
+                            <span className="text-[10px] font-bold text-emerald-600">Planilha Conectada</span>
+                          </>
+                        )}
+                        {syncStatus === "error" && (
+                          <div className="flex items-center gap-1.5" title={syncError || undefined}>
+                            <LucideIcon name="AlertCircle" size={12} className="text-rose-500" />
+                            <span className="text-[10px] font-bold text-rose-600 truncate max-w-[120px]">
+                              {syncError || "Erro Sinc."}
+                            </span>
+                          </div>
+                        )}
+                        {syncStatus === "idle" && (
+                          <>
+                            <LucideIcon name="Cloud" size={12} className="text-slate-400" />
+                            <span className="text-[10px] font-bold text-slate-500">Conectado</span>
+                          </>
+                        )}
                       </div>
-                    )}
-                    {syncStatus === "idle" && (
-                      <>
-                        <LucideIcon name="Cloud" size={12} className="text-slate-400" />
-                        <span className="text-[10px] font-bold text-slate-500">Conectado</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={handleGoogleConnect}
-                  disabled={syncStatus === "syncing"}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition-all cursor-pointer"
-                  title="Vincular sua conta Google para sincronizar e fazer backup na planilha"
-                >
-                  <LucideIcon name="Table" size={13} className="text-emerald-600" />
-                  <span>Vincular Planilha Google (Opcional)</span>
-                </button>
-              )}
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleGoogleConnect}
+                      disabled={syncStatus === "syncing"}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition-all cursor-pointer"
+                      title="Vincular sua conta Google para sincronizar e fazer backup na planilha"
+                    >
+                      <LucideIcon name="Table" size={13} className="text-emerald-600" />
+                      <span>Vincular Planilha Google (Opcional)</span>
+                    </button>
+                  )}
+                </>
+              ) : null}
             </div>
           </div>
 
