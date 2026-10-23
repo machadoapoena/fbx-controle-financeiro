@@ -1,0 +1,55 @@
+{
+  "title": "Controle Financeiro Firebase Schema",
+  "description": "Schema para persistência de transações, categorias, projetos e perfis de usuários no Firestore",
+  "collections": {
+    "users": {
+      "description": "Perfis de usuários do sistema financeiro",
+      "fields": {
+        "id": { "type": "string", "description": "ID do usuário (UID do Firebase Auth)" },
+        "email": { "type": "string", "description": "Email do usuário" },
+        "displayName": { "type": "string", "description": "Nome de exibição" },
+        "role": { "type": "string", "description": "Papel do usuário (admin ou user)" },
+        "createdAt": { "type": "string", "description": "Data de criação em ISO" }
+      }
+    },
+    "transactions": {
+      "description": "Transações financeiras de entradas e saídas",
+      "fields": {
+        "id": { "type": "string", "description": "Identificador único da transação" },
+        "description": { "type": "string", "description": "Descrição do lançamento" },
+        "category": { "type": "string", "description": "Nome ou ID da categoria" },
+        "date": { "type": "string", "description": "Data no formato YYYY-MM-DD" },
+        "value": { "type": "number", "description": "Valor monetário da transação" },
+        "type": { "type": "string", "description": "Tipo: entrada ou saida" },
+        "payee": { "type": "string", "description": "Beneficiário ou pagador" },
+        "bankAccount": { "type": "string", "description": "Conta bancária de movimentação" },
+        "status": { "type": "string", "description": "Situação: realizado ou previsto" },
+        "project": { "type": "string", "description": "Nome ou ID do projeto associado" },
+        "invoiceNumber": { "type": "string", "description": "Número da Nota Fiscal (NF)" },
+        "userId": { "type": "string", "description": "UID do usuário proprietário" },
+        "createdAt": { "type": "string", "description": "Data de criação em ISO" },
+        "updatedAt": { "type": "string", "description": "Data da última atualização em ISO" }
+      }
+    },
+    "categories": {
+      "description": "Categorias de despesas e receitas",
+      "fields": {
+        "id": { "type": "string", "description": "Identificador único da categoria" },
+        "name": { "type": "string", "description": "Nome descritivo da categoria" },
+        "color": { "type": "string", "description": "Cor hexadecimal da categoria" },
+        "icon": { "type": "string", "description": "Nome do ícone Lucide" },
+        "userId": { "type": "string", "description": "UID do usuário proprietário" },
+        "createdAt": { "type": "string", "description": "Data de criação em ISO" }
+      }
+    },
+    "projects": {
+      "description": "Projetos e centros de custo gerenciados",
+      "fields": {
+        "id": { "type": "string", "description": "Identificador único do projeto" },
+        "name": { "type": "string", "description": "Nome do projeto" },
+        "userId": { "type": "string", "description": "UID do usuário proprietário" },
+        "createdAt": { "type": "string", "description": "Data de criação em ISO" }
+      }
+    }
+  }
+}

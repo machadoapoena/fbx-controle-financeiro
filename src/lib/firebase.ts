@@ -1,35 +1,36 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 import firebaseConfig from "../../firebase-applet-config.json";
 
 // Initialize Firebase App
-const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseConfig);
+
+// Initialize Firestore with specific database ID
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Initialize Firebase Auth
 export const auth = getAuth(app);
 
-// Configure Google Auth Provider
+// Configure Google Auth Provider with Drive/Sheets scopes for migration and sync
 export const provider = new GoogleAuthProvider();
 provider.addScope("https://www.googleapis.com/auth/spreadsheets");
 provider.addScope("https://www.googleapis.com/auth/drive.file");
+provider.setCustomParameters({
+  prompt: "select_account"
+});
 
 // In-memory cache for OAuth access token
 let cachedAccessToken: string | null = null;
-let isSigningIn = false;
 
 // Initialize auth listener
 export const initAuth = (
-  onAuthSuccess: (user: User, token: string) => void,
+  onAuthSuccess: (user: User, token: string | null) => void,
   onAuthFailure: () => void
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        onAuthSuccess(user, cachedAccessToken);
-      } else {
-        // If logged in but token is not in cache (e.g. page refresh),
-        // we ask user to click Sign In again to grab a fresh token.
-        // That is the standard pop-up behavior to maintain token safety in-memory.
-        onAuthFailure();
-      }
+      onAuthSuccess(user, cachedAccessToken);
     } else {
       cachedAccessToken = null;
       onAuthFailure();
@@ -38,24 +39,20 @@ export const initAuth = (
 };
 
 // Sign in with Google Popup
-export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+export const googleSignIn = async (): Promise<{ user: User; accessToken: string | null } | null> => {
   try {
-    isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    const token = credential?.accessToken;
+    const token = credential?.accessToken || null;
 
-    if (!token) {
-      throw new Error("Failed to get Google OAuth access token.");
+    if (token) {
+      cachedAccessToken = token;
     }
 
-    cachedAccessToken = token;
     return { user: result.user, accessToken: token };
   } catch (error) {
     console.error("Erro no login com Google:", error);
     throw error;
-  } finally {
-    isSigningIn = false;
   }
 };
 

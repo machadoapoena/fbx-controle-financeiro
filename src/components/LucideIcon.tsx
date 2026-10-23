@@ -30,7 +30,20 @@ import {
   Settings,
   AlertTriangle,
   Building,
-  FileText
+  FileText,
+  Database,
+  UploadCloud,
+  Table,
+  ExternalLink,
+  RefreshCw,
+  CheckCircle2,
+  CheckCircle,
+  AlertCircle,
+  Cloud,
+  Flame,
+  HardDrive,
+  Radio,
+  Server
 } from "lucide-react";
 
 const iconMap: Record<string, React.ComponentType<any>> = {
@@ -64,7 +77,20 @@ const iconMap: Record<string, React.ComponentType<any>> = {
   Settings,
   AlertTriangle,
   Building,
-  FileText
+  FileText,
+  Database,
+  UploadCloud,
+  Table,
+  ExternalLink,
+  RefreshCw,
+  CheckCircle2,
+  CheckCircle,
+  AlertCircle,
+  Cloud,
+  Flame,
+  HardDrive,
+  Radio,
+  Server
 };
 
 interface LucideIconProps extends React.ComponentPropsWithoutRef<"svg"> {

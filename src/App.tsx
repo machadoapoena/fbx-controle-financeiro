@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { DEFAULT_CATEGORIES, INITIAL_TRANSACTIONS } from "./data";
 import { Category, Transaction, Project } from "./types";
@@ -26,6 +26,20 @@ import {
   fetchProjectsFromSheets,
   saveProjectsToSheets,
 } from "./lib/googleSheets";
+import {
+  syncUserProfile,
+  subscribeToTransactions,
+  subscribeToCategories,
+  subscribeToProjects,
+  saveTransactionToFirestore,
+  deleteTransactionFromFirestore,
+  saveCategoryToFirestore,
+  deleteCategoryFromFirestore,
+  saveProjectToFirestore,
+  deleteProjectFromFirestore,
+  isFirestoreEmptyForUser,
+} from "./lib/firestoreService";
+import FirebaseMigrationModal from "./components/FirebaseMigrationModal";
 
 export default function App() {
   // --- STATE PERSISTENCE ---
@@ -92,7 +106,7 @@ export default function App() {
   const [selectedProjectForStats, setSelectedProjectForStats] = useState<string>("");
   const [transactionIdToDelete, setTransactionIdToDelete] = useState<string | null>(null);
 
-  // --- GOOGLE SHEETS SYNC STATE ---
+  // --- GOOGLE SHEETS & FIREBASE STATE ---
   const [googleUser, setGoogleUser] = useState<any>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(null);
   const [googleSpreadsheetId, setGoogleSpreadsheetId] = useState<string | null>(null);
@@ -100,12 +114,30 @@ export default function App() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [isLoadingFromSheets, setIsLoadingFromSheets] = useState(false);
 
+  // --- FIREBASE FIRESTORE SYNC & MIGRATION STATE ---
+  const [isFirebaseMigrationOpen, setIsFirebaseMigrationOpen] = useState(false);
+  const [firestoreStatus, setFirestoreStatus] = useState<"idle" | "live" | "syncing" | "error">("idle");
+  const [hasFirestoreData, setHasFirestoreData] = useState(false);
+  const [showMigrationBanner, setShowMigrationBanner] = useState(false);
+  const firestoreHasDataRef = useRef(false);
+
+  // Active Data Source indicator (Which source is feeding the screen right now)
+  const activeDataSource: "firestore" | "sheets" | "local" = useMemo(() => {
+    if (googleUser && hasFirestoreData) {
+      return "firestore";
+    }
+    if (googleSpreadsheetId) {
+      return "sheets";
+    }
+    return "local";
+  }, [googleUser, hasFirestoreData, googleSpreadsheetId]);
+
   // Synchronize localStorage when state changes (as fallback or local copy)
   useEffect(() => {
     localStorage.setItem("finance_transactions", JSON.stringify(transactions));
   }, [transactions]);
 
-   useEffect(() => {
+  useEffect(() => {
     localStorage.setItem("finance_categories", JSON.stringify(categories));
   }, [categories]);
 
@@ -117,32 +149,94 @@ export default function App() {
     localStorage.setItem("finance_isAdmin", String(isAdmin));
   }, [isAdmin]);
 
-  // --- GOOGLE SHEETS SYNC ACTIONS ---
-  
-  // On Mount: Auto-initialize Auth and handle previously connected state
+  // --- FIREBASE AUTH & FIRESTORE REAL-TIME LISTENERS ---
   useEffect(() => {
-    const unsubscribe = initAuth(
+    let unsubTxs: (() => void) | null = null;
+    let unsubCats: (() => void) | null = null;
+    let unsubProjs: (() => void) | null = null;
+
+    const unsubscribeAuth = initAuth(
       async (user, token) => {
         setGoogleUser(user);
         setGoogleToken(token);
         
+        // 1. Sync User Profile in Firestore
+        try {
+          await syncUserProfile(user);
+          if (user.email === "machadoapoena@gmail.com") {
+            setIsAdmin(true);
+          }
+        } catch (e) {
+          console.warn("User profile sync error:", e);
+        }
+
+        // 2. Subscribe to Firestore Collections in Real-Time
+        setFirestoreStatus("live");
+        unsubTxs = subscribeToTransactions(
+          user.uid,
+          (remoteTxs) => {
+            if (remoteTxs.length > 0) {
+              firestoreHasDataRef.current = true;
+              setTransactions(remoteTxs);
+              setHasFirestoreData(true);
+              setShowMigrationBanner(false);
+            } else {
+              firestoreHasDataRef.current = false;
+              setHasFirestoreData(false);
+              setShowMigrationBanner(true);
+            }
+          },
+          (err) => {
+            console.error("Firestore tx subscription error:", err);
+            setFirestoreStatus("error");
+          }
+        );
+
+        unsubCats = subscribeToCategories(
+          user.uid,
+          (remoteCats) => {
+            if (remoteCats.length > 0) {
+              setCategories(remoteCats);
+            }
+          }
+        );
+
+        unsubProjs = subscribeToProjects(
+          user.uid,
+          (remoteProjs) => {
+            if (remoteProjs.length > 0) {
+              setProjects(remoteProjs);
+            }
+          }
+        );
+
+        // 3. Load spreadsheet if previously connected (only if Firestore is empty)
         const storedId = localStorage.getItem("google_spreadsheet_id");
-        if (storedId) {
+        if (storedId && token) {
           setGoogleSpreadsheetId(storedId);
           setIsLoadingFromSheets(true);
           setSyncStatus("syncing");
           try {
-            const sheetCats = await fetchCategoriesFromSheets(token, storedId);
-            if (sheetCats.length > 0) {
-              setCategories(sheetCats);
-            }
-            const sheetProjs = await fetchProjectsFromSheets(token, storedId);
-            if (sheetProjs.length > 0) {
-              setProjects(sheetProjs);
-            }
-            const sheetTxs = await fetchTransactionsFromSheets(token, storedId);
-            if (sheetTxs.length > 0) {
-              setTransactions(sheetTxs);
+            const isEmpty = await isFirestoreEmptyForUser(user.uid);
+            if (isEmpty && !firestoreHasDataRef.current) {
+              // Firestore is empty: load from sheets to populate screen and offer migration
+              const sheetCats = await fetchCategoriesFromSheets(token, storedId);
+              if (sheetCats.length > 0) {
+                setCategories(sheetCats);
+              }
+              const sheetProjs = await fetchProjectsFromSheets(token, storedId);
+              if (sheetProjs.length > 0) {
+                setProjects(sheetProjs);
+              }
+              const sheetTxs = await fetchTransactionsFromSheets(token, storedId);
+              if (sheetTxs.length > 0) {
+                setTransactions(sheetTxs);
+              }
+              setShowMigrationBanner(true);
+            } else {
+              // Firestore is already populated and is the authoritative active source
+              setHasFirestoreData(true);
+              setShowMigrationBanner(false);
             }
             setSyncStatus("success");
           } catch (err) {
@@ -157,10 +251,21 @@ export default function App() {
         setGoogleUser(null);
         setGoogleToken(null);
         setSyncStatus("idle");
+        setFirestoreStatus("idle");
+        firestoreHasDataRef.current = false;
+        setHasFirestoreData(false);
+        if (unsubTxs) { unsubTxs(); unsubTxs = null; }
+        if (unsubCats) { unsubCats(); unsubCats = null; }
+        if (unsubProjs) { unsubProjs(); unsubProjs = null; }
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeAuth();
+      if (unsubTxs) unsubTxs();
+      if (unsubCats) unsubCats();
+      if (unsubProjs) unsubProjs();
+    };
   }, []);
 
   // Connect Google Account & Load Spreadsheet
@@ -172,40 +277,52 @@ export default function App() {
       if (res) {
         setGoogleUser(res.user);
         setGoogleToken(res.accessToken);
-        
-        setIsLoadingFromSheets(true);
-        // Find or create spreadsheet
-        const id = await findOrCreateSpreadsheet(res.accessToken);
-        setGoogleSpreadsheetId(id);
-        
-        // Load categories
-        const sheetCats = await fetchCategoriesFromSheets(res.accessToken, id);
-        if (sheetCats.length > 0) {
-          setCategories(sheetCats);
-        } else {
-          // If sheets is empty, seed with current local categories
-          await saveCategoriesToSheets(res.accessToken, id, categories);
+        await syncUserProfile(res.user);
+        if (res.user.email === "machadoapoena@gmail.com") {
+          setIsAdmin(true);
         }
+        
+        if (res.accessToken) {
+          setIsLoadingFromSheets(true);
+          // Find or create spreadsheet
+          const id = await findOrCreateSpreadsheet(res.accessToken);
+          setGoogleSpreadsheetId(id);
+          
+          // Check if Firestore already has records
+          const isEmpty = await isFirestoreEmptyForUser(res.user.uid);
+          if (isEmpty && !firestoreHasDataRef.current) {
+            // Load categories from sheet
+            const sheetCats = await fetchCategoriesFromSheets(res.accessToken, id);
+            if (sheetCats.length > 0) {
+              setCategories(sheetCats);
+            } else {
+              await saveCategoriesToSheets(res.accessToken, id, categories);
+            }
 
-        // Load projects
-        const sheetProjs = await fetchProjectsFromSheets(res.accessToken, id);
-        if (sheetProjs.length > 0) {
-          setProjects(sheetProjs);
-        } else {
-          // If sheets is empty, seed with current local projects
-          await saveProjectsToSheets(res.accessToken, id, projects);
+            // Load projects from sheet
+            const sheetProjs = await fetchProjectsFromSheets(res.accessToken, id);
+            if (sheetProjs.length > 0) {
+              setProjects(sheetProjs);
+            } else {
+              await saveProjectsToSheets(res.accessToken, id, projects);
+            }
+            
+            // Load transactions from sheet
+            const sheetTxs = await fetchTransactionsFromSheets(res.accessToken, id);
+            if (sheetTxs.length > 0) {
+              setTransactions(sheetTxs);
+            } else {
+              await saveTransactionsToSheets(res.accessToken, id, transactions);
+            }
+            setShowMigrationBanner(true);
+          } else {
+            // Firestore has data: do not overwrite! Firestore is the primary active source
+            setHasFirestoreData(true);
+            setShowMigrationBanner(false);
+          }
+          
+          setSyncStatus("success");
         }
-        
-        // Load transactions
-        const sheetTxs = await fetchTransactionsFromSheets(res.accessToken, id);
-        if (sheetTxs.length > 0) {
-          setTransactions(sheetTxs);
-        } else {
-          // If sheets is empty, seed with current local transactions
-          await saveTransactionsToSheets(res.accessToken, id, transactions);
-        }
-        
-        setSyncStatus("success");
       }
     } catch (err: any) {
       console.error(err);
@@ -425,27 +542,53 @@ export default function App() {
 
   // --- CRUD OPERATIONS ---
   // Create / Update Transaction
-  const handleTransactionSubmit = (data: Omit<Transaction, "id"> & { id?: string }) => {
+  const handleTransactionSubmit = async (data: Omit<Transaction, "id"> & { id?: string }) => {
+    let targetTx: Transaction;
     if (data.id) {
       // Edit
+      targetTx = { ...data } as Transaction;
       setTransactions((prev) =>
-        prev.map((t) => (t.id === data.id ? { ...t, ...data } as Transaction : t))
+        prev.map((t) => (t.id === data.id ? targetTx : t))
       );
     } else {
       // Insert
-      const newTx: Transaction = {
+      targetTx = {
         ...data,
         id: `tx-${Date.now()}`
       };
-      setTransactions((prev) => [newTx, ...prev]);
+      setTransactions((prev) => [targetTx, ...prev]);
+    }
+
+    // Persist immediately to Firestore
+    if (googleUser?.uid) {
+      try {
+        await saveTransactionToFirestore(googleUser.uid, targetTx);
+      } catch (err) {
+        console.error("Erro ao salvar transação no Firestore:", err);
+      }
     }
   };
 
   // Quick Liquidate (Previsto -> Realizado)
-  const handleLiquidateTransaction = (id: string) => {
+  const handleLiquidateTransaction = async (id: string) => {
+    let targetTx: Transaction | undefined;
     setTransactions((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, status: "realizado" as const } : t))
+      prev.map((t) => {
+        if (t.id === id) {
+          targetTx = { ...t, status: "realizado" as const };
+          return targetTx;
+        }
+        return t;
+      })
     );
+
+    if (googleUser?.uid && targetTx) {
+      try {
+        await saveTransactionToFirestore(googleUser.uid, targetTx);
+      } catch (err) {
+        console.error("Erro ao atualizar situação no Firestore:", err);
+      }
+    }
   };
 
   // Delete Transaction
@@ -453,10 +596,19 @@ export default function App() {
     setTransactionIdToDelete(id);
   };
 
-  const handleConfirmDeleteTransaction = () => {
+  const handleConfirmDeleteTransaction = async () => {
     if (transactionIdToDelete) {
-      setTransactions((prev) => prev.filter((t) => t.id !== transactionIdToDelete));
+      const idToDelete = transactionIdToDelete;
+      setTransactions((prev) => prev.filter((t) => t.id !== idToDelete));
       setTransactionIdToDelete(null);
+
+      if (googleUser?.uid) {
+        try {
+          await deleteTransactionFromFirestore(idToDelete);
+        } catch (err) {
+          console.error("Erro ao excluir transação no Firestore:", err);
+        }
+      }
     }
   };
 
@@ -473,16 +625,24 @@ export default function App() {
   };
 
   // Add Custom Category
-  const handleAddCategory = (newCatData: Omit<Category, "id">) => {
+  const handleAddCategory = async (newCatData: Omit<Category, "id">) => {
     const newCat: Category = {
       ...newCatData,
       id: `cat-${Date.now()}`
     };
     setCategories((prev) => [...prev, newCat]);
+
+    if (googleUser?.uid) {
+      try {
+        await saveCategoryToFirestore(googleUser.uid, newCat);
+      } catch (err) {
+        console.error("Erro ao salvar categoria no Firestore:", err);
+      }
+    }
   };
 
   // Delete Custom Category
-  const handleDeleteCategory = (id: string) => {
+  const handleDeleteCategory = async (id: string) => {
     const catToDelete = categories.find((c) => c.id === id);
     if (!catToDelete) return;
 
@@ -496,19 +656,35 @@ export default function App() {
     }
 
     setCategories((prev) => prev.filter((c) => c.id !== id));
+
+    if (googleUser?.uid) {
+      try {
+        await deleteCategoryFromFirestore(id);
+      } catch (err) {
+        console.error("Erro ao excluir categoria do Firestore:", err);
+      }
+    }
   };
 
   // Add Custom Project
-  const handleAddProject = (projectName: string) => {
+  const handleAddProject = async (projectName: string) => {
     const newProj: Project = {
       id: `proj-${Date.now()}`,
       name: projectName
     };
     setProjects((prev) => [...prev, newProj]);
+
+    if (googleUser?.uid) {
+      try {
+        await saveProjectToFirestore(googleUser.uid, newProj);
+      } catch (err) {
+        console.error("Erro ao salvar projeto no Firestore:", err);
+      }
+    }
   };
 
   // Delete Custom Project
-  const handleDeleteProject = (id: string) => {
+  const handleDeleteProject = async (id: string) => {
     const projToDelete = projects.find((p) => p.id === id);
     if (!projToDelete) return;
 
@@ -529,6 +705,14 @@ export default function App() {
     }
     if (selectedProjectFilter === id) {
       setSelectedProjectFilter("todos");
+    }
+
+    if (googleUser?.uid) {
+      try {
+        await deleteProjectFromFirestore(id);
+      } catch (err) {
+        console.error("Erro ao excluir projeto do Firestore:", err);
+      }
     }
   };
 
@@ -634,93 +818,242 @@ export default function App() {
       {/* Main Core Layout Grid */}
       <main className="max-w-7xl mx-auto px-4 md:px-8 mt-8 space-y-8" id="main-content">
 
-        {/* Google Sheets Sync Status Panel */}
-        <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex flex-col md:flex-row justify-between items-center gap-4" id="sheets-sync-panel">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-[#009d7a] flex items-center justify-center font-bold">
-              <LucideIcon name="Table" size={20} />
+        {/* Firebase Migration Banner (when user has existing spreadsheet/local data and Firestore needs migration) */}
+        {showMigrationBanner && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-gradient-to-r from-amber-500/10 via-emerald-500/10 to-teal-500/10 border border-emerald-500/30 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xs"
+            id="migration-banner"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-emerald-600 text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
+                <LucideIcon name="Database" size={20} />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-slate-800">Migração para o Firebase Firestore Disponível</h4>
+                <p className="text-[11px] text-slate-600">
+                  Deseja transferir seus dados existentes da planilha para o banco de dados em nuvem do Firebase? Suas transações ficarão salvas e sincronizadas em tempo real.
+                </p>
+              </div>
             </div>
-            <div>
-              <h4 className="text-xs font-bold text-slate-800">Planilha Google Sheets</h4>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setIsFirebaseMigrationOpen(true)}
+                className="px-3.5 py-1.5 bg-[#009d7a] hover:bg-[#008264] text-white text-xs font-bold rounded-lg shadow-xs hover:shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+              >
+                <LucideIcon name="UploadCloud" size={13} />
+                <span>Migrar Dados Agora</span>
+              </button>
+              <button
+                onClick={() => setShowMigrationBanner(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+                title="Dispensar aviso"
+              >
+                <LucideIcon name="X" size={15} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Cloud & Database Integration Center */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs space-y-4" id="cloud-sync-panel">
+          <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+            
+            {/* Left: Firebase Firestore Status */}
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold shrink-0">
+                <LucideIcon name="Database" size={20} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-xs font-bold text-slate-800">Firebase Firestore</h4>
+                  {firestoreStatus === "live" && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      Em Tempo Real
+                    </span>
+                  )}
+                </div>
+                {googleUser ? (
+                  <p className="text-[11px] text-slate-500">
+                    Banco de dados em nuvem conectado para <span className="font-semibold text-slate-700">{googleUser.email}</span>
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-slate-400">
+                    Conecte sua conta para sincronizar suas transações no Firebase Firestore.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Right: Actions */}
+            <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end">
+              {/* Migration Action Button */}
+              <button
+                onClick={() => setIsFirebaseMigrationOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-[#009d7a] hover:from-emerald-700 hover:to-[#008264] text-white text-xs font-bold rounded-lg shadow-xs hover:shadow-sm transition-all cursor-pointer"
+                title="Migrar dados da planilha ou do painel para o Firestore"
+              >
+                <LucideIcon name="UploadCloud" size={13} />
+                <span>Migrar Planilha para o Firebase</span>
+              </button>
+
+              {googleUser && googleSpreadsheetId && (
+                <a
+                  href={`https://docs.google.com/spreadsheets/d/${googleSpreadsheetId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                >
+                  <LucideIcon name="Table" size={12} className="text-emerald-600" />
+                  <span>Planilha Google</span>
+                  <LucideIcon name="ExternalLink" size={11} className="text-slate-400" />
+                </a>
+              )}
+
               {googleUser ? (
-                <p className="text-[11px] text-slate-500">
-                  Sincronizado na conta <span className="font-semibold">{googleUser.email}</span>
-                </p>
+                <div className="flex items-center gap-2">
+                  {/* Google Sheets Sync Badge */}
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
+                    {syncStatus === "syncing" && (
+                      <>
+                        <motion.div
+                          animate={{ rotate: 360 }}
+                          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                          className="text-amber-500 flex items-center justify-center"
+                        >
+                          <LucideIcon name="RefreshCw" size={12} />
+                        </motion.div>
+                        <span className="text-[10px] font-bold text-amber-600">Sincronizando...</span>
+                      </>
+                    )}
+                    {syncStatus === "success" && (
+                      <>
+                        <LucideIcon name="CheckCircle2" size={12} className="text-emerald-500" />
+                        <span className="text-[10px] font-bold text-emerald-600">Planilha Conectada</span>
+                      </>
+                    )}
+                    {syncStatus === "error" && (
+                      <div className="flex items-center gap-1.5" title={syncError || undefined}>
+                        <LucideIcon name="AlertCircle" size={12} className="text-rose-500" />
+                        <span className="text-[10px] font-bold text-rose-600 truncate max-w-[120px]">
+                          {syncError || "Erro Sinc."}
+                        </span>
+                      </div>
+                    )}
+                    {syncStatus === "idle" && (
+                      <>
+                        <LucideIcon name="Cloud" size={12} className="text-slate-400" />
+                        <span className="text-[10px] font-bold text-slate-500">Conectado</span>
+                      </>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={handleGoogleDisconnect}
+                    className="px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100/50 rounded-lg transition-colors cursor-pointer"
+                    title="Desconectar conta"
+                  >
+                    Desconectar
+                  </button>
+                </div>
               ) : (
-                <p className="text-[11px] text-slate-400">
-                  Os dados estão salvos no seu navegador. Conecte ao Google Sheets para gravar e ler de sua planilha.
-                </p>
+                <button
+                  onClick={handleGoogleConnect}
+                  disabled={syncStatus === "syncing"}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#009d7a] hover:bg-[#008264] text-white text-xs font-bold rounded-lg shadow-xs hover:shadow-sm transition-all cursor-pointer"
+                >
+                  <LucideIcon name="Chrome" size={13} />
+                  <span>Conectar Google / Firebase</span>
+                </button>
               )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 w-full md:w-auto justify-end">
-            {googleUser && googleSpreadsheetId && (
-              <a
-                href={`https://docs.google.com/spreadsheets/d/${googleSpreadsheetId}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
-              >
-                <LucideIcon name="ExternalLink" size={12} />
-                <span>Abrir Planilha</span>
-              </a>
-            )}
-
-            {googleUser ? (
-              <div className="flex items-center gap-2">
-                {/* Sync Status Badge */}
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
-                  {syncStatus === "syncing" && (
-                    <>
-                      <motion.div
-                        animate={{ rotate: 360 }}
-                        transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                        className="text-amber-500 flex items-center justify-center"
-                      >
-                        <LucideIcon name="RefreshCw" size={12} />
-                      </motion.div>
-                      <span className="text-[10px] font-bold text-amber-600">Sincronizando...</span>
-                    </>
-                  )}
-                  {syncStatus === "success" && (
-                    <>
-                      <LucideIcon name="CheckCircle2" size={12} className="text-emerald-500" />
-                      <span className="text-[10px] font-bold text-emerald-600">Sincronizado</span>
-                    </>
-                  )}
-                  {syncStatus === "error" && (
-                    <div className="flex items-center gap-1.5" title={syncError || undefined}>
-                      <LucideIcon name="AlertCircle" size={12} className="text-rose-500" />
-                      <span className="text-[10px] font-bold text-rose-600 truncate max-w-[150px]">
-                        {syncError ? `Erro: ${syncError}` : "Erro ao Sincronizar"}
+          {/* Active Data Source Live Indicator Bar */}
+          <div className="pt-3 border-t border-slate-100">
+            {activeDataSource === "firestore" && (
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-amber-500/5 rounded-xl p-3 border border-amber-500/20">
+                <div className="flex items-start sm:items-center gap-2.5">
+                  <span className="flex h-3 w-3 relative mt-0.5 sm:mt-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                  </span>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold text-slate-800">
+                        Fonte Ativa na Tela: <span className="text-amber-800 font-extrabold">Firebase Firestore</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        Sincronização em Tempo Real
                       </span>
                     </div>
-                  )}
-                  {syncStatus === "idle" && (
-                    <>
-                      <LucideIcon name="Cloud" size={12} className="text-slate-400" />
-                      <span className="text-[10px] font-bold text-slate-500">Conectado</span>
-                    </>
-                  )}
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Os dados e transações apresentados na tela estão sendo carregados e salvos <strong>diretamente no banco de dados Firebase Firestore</strong>.
+                    </p>
+                  </div>
                 </div>
+                {googleSpreadsheetId && (
+                  <div className="text-[11px] text-slate-600 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shrink-0 flex items-center gap-1.5 shadow-2xs">
+                    <LucideIcon name="Table" size={13} className="text-emerald-600" />
+                    <span>Planilha Google vinculada para backup</span>
+                  </div>
+                )}
+              </div>
+            )}
 
+            {activeDataSource === "sheets" && (
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-emerald-50/70 rounded-xl p-3 border border-emerald-200">
+                <div className="flex items-start sm:items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                    <LucideIcon name="Table" size={16} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold text-slate-800">
+                        Fonte Ativa na Tela: <span className="text-emerald-800 font-extrabold">Planilha Google Sheets</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                        Aguardando Migração para o Firebase
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 mt-0.5">
+                      Os dados na tela foram carregados da sua planilha. Seu banco de dados Firebase Firestore ainda está vazio. Migre para gravar tudo no Firebase.
+                    </p>
+                  </div>
+                </div>
                 <button
-                  onClick={handleGoogleDisconnect}
-                  className="px-3 py-1.5 text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100/50 rounded-lg transition-colors cursor-pointer"
+                  onClick={() => setIsFirebaseMigrationOpen(true)}
+                  className="px-3 py-1.5 bg-[#009d7a] hover:bg-[#008264] text-white text-xs font-bold rounded-lg shadow-xs transition-all flex items-center gap-1.5 shrink-0 cursor-pointer"
                 >
-                  Desconectar
+                  <LucideIcon name="UploadCloud" size={13} />
+                  <span>Migrar para o Firebase</span>
                 </button>
               </div>
-            ) : (
-              <button
-                onClick={handleGoogleConnect}
-                disabled={syncStatus === "syncing"}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#009d7a] hover:bg-[#008264] text-white text-xs font-bold rounded-lg shadow-xs hover:shadow-sm transition-all cursor-pointer"
-              >
-                <LucideIcon name="Chrome" size={13} />
-                <span>Conectar Planilha Google</span>
-              </button>
+            )}
+
+            {activeDataSource === "local" && (
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-slate-50 rounded-xl p-3 border border-slate-200">
+                <div className="flex items-start sm:items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-slate-200/70 text-slate-600 flex items-center justify-center shrink-0">
+                    <LucideIcon name="HardDrive" size={16} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-800">
+                        Fonte Ativa na Tela: <span className="text-slate-700 font-extrabold">Armazenamento Local</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700">
+                        Navegador
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Os dados estão salvos na memória deste navegador. Conecte sua conta Google acima para sincronizar no Firebase Firestore.
+                    </p>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -740,7 +1073,7 @@ export default function App() {
         <section className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4" id="filters-section">
           <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-slate-200/60 pb-4">
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
                   <LucideIcon name="Filter" size={16} className="text-[#0c2c40]" />
                   Registros e Transações
@@ -748,8 +1081,38 @@ export default function App() {
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200/60">
                   {filteredTransactions.length} {filteredTransactions.length === 1 ? "registro" : "registros"}
                 </span>
+
+                {/* Data Source Pill */}
+                {activeDataSource === "firestore" && (
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 shadow-2xs"
+                    title="Dados lidos e atualizados diretamente do Firebase Firestore em tempo real"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <LucideIcon name="Database" size={11} className="text-amber-600" />
+                    Fonte: Firebase Firestore (Tempo Real)
+                  </span>
+                )}
+                {activeDataSource === "sheets" && (
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-2xs"
+                    title="Dados lidos da sua Planilha Google Sheets"
+                  >
+                    <LucideIcon name="Table" size={11} className="text-emerald-600" />
+                    Fonte: Google Sheets
+                  </span>
+                )}
+                {activeDataSource === "local" && (
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 shadow-2xs"
+                    title="Dados salvos no armazenamento local do navegador"
+                  >
+                    <LucideIcon name="HardDrive" size={11} className="text-slate-500" />
+                    Fonte: Armazenamento Local
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-slate-400">Gerencie, filtre e pesquise seu fluxo de caixa com paginação sob demanda</p>
+              <p className="text-xs text-slate-400 mt-1">Gerencie, filtre e pesquise seu fluxo de caixa com paginação sob demanda</p>
             </div>
 
             {/* Quick Action Buttons for Admin / Normal user */}
@@ -1172,6 +1535,24 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* --- FIREBASE MIGRATION MODAL --- */}
+      <FirebaseMigrationModal
+        isOpen={isFirebaseMigrationOpen}
+        onClose={() => setIsFirebaseMigrationOpen(false)}
+        userId={googleUser?.uid || null}
+        userEmail={googleUser?.email || null}
+        googleToken={googleToken}
+        googleSpreadsheetId={googleSpreadsheetId}
+        currentTransactions={transactions}
+        currentCategories={categories}
+        currentProjects={projects}
+        onMigrationComplete={() => {
+          setShowMigrationBanner(false);
+          setHasFirestoreData(true);
+        }}
+        onConnectGoogle={handleGoogleConnect}
+      />
 
     </div>
   );
