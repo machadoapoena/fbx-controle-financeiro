@@ -15,6 +15,7 @@ import Pagination from "./components/Pagination";
 import {
   initAuth,
   googleSignIn,
+  logout,
 } from "./lib/firebase";
 import {
   findOrCreateSpreadsheet,
@@ -83,6 +84,9 @@ export default function App() {
   });
 
   const [isAdmin, setIsAdmin] = useState<boolean>(() => {
+    if (localStorage.getItem("finance_admin_logged_out") === "true") {
+      return false;
+    }
     return localStorage.getItem("finance_isAdmin") === "true";
   });
 
@@ -192,6 +196,12 @@ export default function App() {
     // 2. Google Account Listener (Optional - for Google Sheets sync or admin identity)
     const unsubscribeAuth = initAuth(
       async (user, token) => {
+        // If user explicitly clicked "Sair", respect their logout decision
+        const wasExplicitlyLoggedOut = localStorage.getItem("finance_admin_logged_out") === "true";
+        if (wasExplicitlyLoggedOut) {
+          return;
+        }
+
         setGoogleUser(user);
         setGoogleToken(token);
         
@@ -200,6 +210,7 @@ export default function App() {
           await syncUserProfile(user);
           if (user.email === "machadoapoena@gmail.com") {
             setIsAdmin(true);
+            localStorage.setItem("finance_isAdmin", "true");
           }
         } catch (e) {
           console.warn("User profile sync error:", e);
@@ -260,11 +271,13 @@ export default function App() {
     try {
       const res = await googleSignIn();
       if (res) {
+        localStorage.removeItem("finance_admin_logged_out");
         setGoogleUser(res.user);
         setGoogleToken(res.accessToken);
         await syncUserProfile(res.user);
         if (res.user.email === "machadoapoena@gmail.com") {
           setIsAdmin(true);
+          localStorage.setItem("finance_isAdmin", "true");
         }
         
         if (res.accessToken) {
@@ -389,11 +402,22 @@ export default function App() {
 
   // --- ADMIN SESSION ---
   const handleLoginSuccess = () => {
+    localStorage.removeItem("finance_admin_logged_out");
+    localStorage.setItem("finance_isAdmin", "true");
     setIsAdmin(true);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    localStorage.setItem("finance_admin_logged_out", "true");
+    localStorage.setItem("finance_isAdmin", "false");
     setIsAdmin(false);
+    setGoogleUser(null);
+    setGoogleToken(null);
+    try {
+      await logout();
+    } catch (e) {
+      console.warn("Erro ao desautenticar sessão:", e);
+    }
   };
 
   // --- DYNAMIC FILTERS DATA ---
