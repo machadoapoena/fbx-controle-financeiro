@@ -63,11 +63,13 @@ export async function syncUserProfile(user: User): Promise<void> {
 }
 
 /**
- * Checks whether user has any transactions recorded in Firestore.
+ * Checks whether user or global Firestore database has any transactions recorded.
  */
-export async function isFirestoreEmptyForUser(userId: string): Promise<boolean> {
+export async function isFirestoreEmpty(userId?: string): Promise<boolean> {
   try {
-    const q = query(collection(db, "transactions"), where("userId", "==", userId));
+    const q = userId
+      ? query(collection(db, "transactions"), where("userId", "==", userId))
+      : collection(db, "transactions");
     const snap = await getDocs(q);
     return snap.empty;
   } catch (error) {
@@ -76,15 +78,32 @@ export async function isFirestoreEmptyForUser(userId: string): Promise<boolean> 
   }
 }
 
+export const isFirestoreEmptyForUser = isFirestoreEmpty;
+
 /**
- * Subscribe in real time to user's transactions.
+ * Subscribe in real time to transactions. Works globally by default or filtered by user.
  */
 export function subscribeToTransactions(
-  userId: string,
-  onData: (txs: Transaction[]) => void,
-  onError?: (err: Error) => void
+  userIdOrOnData: string | ((txs: Transaction[]) => void),
+  onDataOrOnError?: ((txs: Transaction[]) => void) | ((err: Error) => void),
+  maybeOnError?: (err: Error) => void
 ): Unsubscribe {
-  const q = query(collection(db, "transactions"), where("userId", "==", userId));
+  let userId: string | undefined;
+  let onData: (txs: Transaction[]) => void;
+  let onError: ((err: Error) => void) | undefined;
+
+  if (typeof userIdOrOnData === "function") {
+    onData = userIdOrOnData;
+    onError = onDataOrOnError as ((err: Error) => void) | undefined;
+  } else {
+    userId = userIdOrOnData;
+    onData = onDataOrOnError as (txs: Transaction[]) => void;
+    onError = maybeOnError;
+  }
+
+  const q = userId
+    ? query(collection(db, "transactions"), where("userId", "==", userId))
+    : collection(db, "transactions");
 
   return onSnapshot(
     q,
@@ -118,14 +137,29 @@ export function subscribeToTransactions(
 }
 
 /**
- * Subscribe in real time to user's categories.
+ * Subscribe in real time to categories. Works globally by default or filtered by user.
  */
 export function subscribeToCategories(
-  userId: string,
-  onData: (cats: Category[]) => void,
-  onError?: (err: Error) => void
+  userIdOrOnData: string | ((cats: Category[]) => void),
+  onDataOrOnError?: ((cats: Category[]) => void) | ((err: Error) => void),
+  maybeOnError?: (err: Error) => void
 ): Unsubscribe {
-  const q = query(collection(db, "categories"), where("userId", "==", userId));
+  let userId: string | undefined;
+  let onData: (cats: Category[]) => void;
+  let onError: ((err: Error) => void) | undefined;
+
+  if (typeof userIdOrOnData === "function") {
+    onData = userIdOrOnData;
+    onError = onDataOrOnError as ((err: Error) => void) | undefined;
+  } else {
+    userId = userIdOrOnData;
+    onData = onDataOrOnError as (cats: Category[]) => void;
+    onError = maybeOnError;
+  }
+
+  const q = userId
+    ? query(collection(db, "categories"), where("userId", "==", userId))
+    : collection(db, "categories");
 
   return onSnapshot(
     q,
@@ -150,14 +184,29 @@ export function subscribeToCategories(
 }
 
 /**
- * Subscribe in real time to user's projects.
+ * Subscribe in real time to projects. Works globally by default or filtered by user.
  */
 export function subscribeToProjects(
-  userId: string,
-  onData: (projs: Project[]) => void,
-  onError?: (err: Error) => void
+  userIdOrOnData: string | ((projs: Project[]) => void),
+  onDataOrOnError?: ((projs: Project[]) => void) | ((err: Error) => void),
+  maybeOnError?: (err: Error) => void
 ): Unsubscribe {
-  const q = query(collection(db, "projects"), where("userId", "==", userId));
+  let userId: string | undefined;
+  let onData: (projs: Project[]) => void;
+  let onError: ((err: Error) => void) | undefined;
+
+  if (typeof userIdOrOnData === "function") {
+    onData = userIdOrOnData;
+    onError = onDataOrOnError as ((err: Error) => void) | undefined;
+  } else {
+    userId = userIdOrOnData;
+    onData = onDataOrOnError as (projs: Project[]) => void;
+    onError = maybeOnError;
+  }
+
+  const q = userId
+    ? query(collection(db, "projects"), where("userId", "==", userId))
+    : collection(db, "projects");
 
   return onSnapshot(
     q,
@@ -182,7 +231,7 @@ export function subscribeToProjects(
 /**
  * Saves or updates a transaction in Firestore.
  */
-export async function saveTransactionToFirestore(userId: string, tx: Transaction): Promise<void> {
+export async function saveTransactionToFirestore(userId: string = "admin", tx: Transaction): Promise<void> {
   const txRef = doc(db, "transactions", tx.id);
   const now = new Date().toISOString();
   try {
@@ -200,7 +249,7 @@ export async function saveTransactionToFirestore(userId: string, tx: Transaction
         status: tx.status || "realizado",
         project: tx.project || "",
         invoiceNumber: tx.invoiceNumber || "",
-        userId: userId,
+        userId: userId || "admin",
         updatedAt: now,
       },
       { merge: true }
@@ -231,7 +280,7 @@ export async function deleteTransactionFromFirestore(txId: string): Promise<void
 /**
  * Saves a category to Firestore.
  */
-export async function saveCategoryToFirestore(userId: string, cat: Category): Promise<void> {
+export async function saveCategoryToFirestore(userId: string = "admin", cat: Category): Promise<void> {
   const catRef = doc(db, "categories", cat.id);
   try {
     await setDoc(
@@ -241,7 +290,7 @@ export async function saveCategoryToFirestore(userId: string, cat: Category): Pr
         name: cat.name,
         color: cat.color,
         icon: cat.icon,
-        userId: userId,
+        userId: userId || "admin",
         updatedAt: new Date().toISOString(),
       },
       { merge: true }
@@ -272,7 +321,7 @@ export async function deleteCategoryFromFirestore(catId: string): Promise<void> 
 /**
  * Saves a project to Firestore.
  */
-export async function saveProjectToFirestore(userId: string, proj: Project): Promise<void> {
+export async function saveProjectToFirestore(userId: string = "admin", proj: Project): Promise<void> {
   const projRef = doc(db, "projects", proj.id);
   try {
     await setDoc(
@@ -280,7 +329,7 @@ export async function saveProjectToFirestore(userId: string, proj: Project): Pro
       {
         id: proj.id,
         name: proj.name,
-        userId: userId,
+        userId: userId || "admin",
         updatedAt: new Date().toISOString(),
       },
       { merge: true }

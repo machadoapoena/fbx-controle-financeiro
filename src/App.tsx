@@ -15,7 +15,6 @@ import Pagination from "./components/Pagination";
 import {
   initAuth,
   googleSignIn,
-  logout,
 } from "./lib/firebase";
 import {
   findOrCreateSpreadsheet,
@@ -37,6 +36,7 @@ import {
   deleteCategoryFromFirestore,
   saveProjectToFirestore,
   deleteProjectFromFirestore,
+  isFirestoreEmpty,
   isFirestoreEmptyForUser,
 } from "./lib/firestoreService";
 import FirebaseMigrationModal from "./components/FirebaseMigrationModal";
@@ -123,14 +123,14 @@ export default function App() {
 
   // Active Data Source indicator (Which source is feeding the screen right now)
   const activeDataSource: "firestore" | "sheets" | "local" = useMemo(() => {
-    if (googleUser && hasFirestoreData) {
+    if (hasFirestoreData || firestoreStatus === "live") {
       return "firestore";
     }
     if (googleSpreadsheetId) {
       return "sheets";
     }
     return "local";
-  }, [googleUser, hasFirestoreData, googleSpreadsheetId]);
+  }, [hasFirestoreData, firestoreStatus, googleSpreadsheetId]);
 
   // Synchronize localStorage when state changes (as fallback or local copy)
   useEffect(() => {
@@ -149,18 +149,53 @@ export default function App() {
     localStorage.setItem("finance_isAdmin", String(isAdmin));
   }, [isAdmin]);
 
-  // --- FIREBASE AUTH & FIRESTORE REAL-TIME LISTENERS ---
+  // --- FIREBASE FIRESTORE REAL-TIME LISTENERS & AUTH ---
   useEffect(() => {
-    let unsubTxs: (() => void) | null = null;
-    let unsubCats: (() => void) | null = null;
-    let unsubProjs: (() => void) | null = null;
+    // 1. Immediately subscribe to Firestore in Real-Time on mount (no login required)
+    setFirestoreStatus("live");
+    const unsubTxs = subscribeToTransactions(
+      (remoteTxs) => {
+        if (remoteTxs.length > 0) {
+          firestoreHasDataRef.current = true;
+          setTransactions(remoteTxs);
+          setHasFirestoreData(true);
+          setShowMigrationBanner(false);
+        } else {
+          firestoreHasDataRef.current = false;
+          setHasFirestoreData(false);
+          // Firestore is connected but currently has 0 transactions
+          setShowMigrationBanner(true);
+        }
+      },
+      (err) => {
+        console.error("Firestore tx subscription error:", err);
+        setFirestoreStatus("error");
+      }
+    );
 
+    const unsubCats = subscribeToCategories(
+      (remoteCats) => {
+        if (remoteCats.length > 0) {
+          setCategories(remoteCats);
+        }
+      }
+    );
+
+    const unsubProjs = subscribeToProjects(
+      (remoteProjs) => {
+        if (remoteProjs.length > 0) {
+          setProjects(remoteProjs);
+        }
+      }
+    );
+
+    // 2. Google Account Listener (Optional - for Google Sheets sync or admin identity)
     const unsubscribeAuth = initAuth(
       async (user, token) => {
         setGoogleUser(user);
         setGoogleToken(token);
         
-        // 1. Sync User Profile in Firestore
+        // Sync User Profile in Firestore
         try {
           await syncUserProfile(user);
           if (user.email === "machadoapoena@gmail.com") {
@@ -170,56 +205,15 @@ export default function App() {
           console.warn("User profile sync error:", e);
         }
 
-        // 2. Subscribe to Firestore Collections in Real-Time
-        setFirestoreStatus("live");
-        unsubTxs = subscribeToTransactions(
-          user.uid,
-          (remoteTxs) => {
-            if (remoteTxs.length > 0) {
-              firestoreHasDataRef.current = true;
-              setTransactions(remoteTxs);
-              setHasFirestoreData(true);
-              setShowMigrationBanner(false);
-            } else {
-              firestoreHasDataRef.current = false;
-              setHasFirestoreData(false);
-              setShowMigrationBanner(true);
-            }
-          },
-          (err) => {
-            console.error("Firestore tx subscription error:", err);
-            setFirestoreStatus("error");
-          }
-        );
-
-        unsubCats = subscribeToCategories(
-          user.uid,
-          (remoteCats) => {
-            if (remoteCats.length > 0) {
-              setCategories(remoteCats);
-            }
-          }
-        );
-
-        unsubProjs = subscribeToProjects(
-          user.uid,
-          (remoteProjs) => {
-            if (remoteProjs.length > 0) {
-              setProjects(remoteProjs);
-            }
-          }
-        );
-
-        // 3. Load spreadsheet if previously connected (only if Firestore is empty)
+        // Load spreadsheet if previously connected and Firestore is empty
         const storedId = localStorage.getItem("google_spreadsheet_id");
         if (storedId && token) {
           setGoogleSpreadsheetId(storedId);
           setIsLoadingFromSheets(true);
           setSyncStatus("syncing");
           try {
-            const isEmpty = await isFirestoreEmptyForUser(user.uid);
+            const isEmpty = await isFirestoreEmpty();
             if (isEmpty && !firestoreHasDataRef.current) {
-              // Firestore is empty: load from sheets to populate screen and offer migration
               const sheetCats = await fetchCategoriesFromSheets(token, storedId);
               if (sheetCats.length > 0) {
                 setCategories(sheetCats);
@@ -233,10 +227,6 @@ export default function App() {
                 setTransactions(sheetTxs);
               }
               setShowMigrationBanner(true);
-            } else {
-              // Firestore is already populated and is the authoritative active source
-              setHasFirestoreData(true);
-              setShowMigrationBanner(false);
             }
             setSyncStatus("success");
           } catch (err) {
@@ -251,12 +241,7 @@ export default function App() {
         setGoogleUser(null);
         setGoogleToken(null);
         setSyncStatus("idle");
-        setFirestoreStatus("idle");
-        firestoreHasDataRef.current = false;
-        setHasFirestoreData(false);
-        if (unsubTxs) { unsubTxs(); unsubTxs = null; }
-        if (unsubCats) { unsubCats(); unsubCats = null; }
-        if (unsubProjs) { unsubProjs(); unsubProjs = null; }
+        // We do NOT disconnect Firestore: it remains connected and live!
       }
     );
 
@@ -330,47 +315,6 @@ export default function App() {
       setSyncError(err.message || "Falha na conexão com o Google");
     } finally {
       setIsLoadingFromSheets(false);
-    }
-  };
-
-  // Disconnect Google Sheets
-  const handleGoogleDisconnect = async () => {
-    const confirmLogout = window.confirm("Deseja realmente desconectar da planilha do Google Sheets?");
-    if (!confirmLogout) return;
-
-    try {
-      await logout();
-      setGoogleUser(null);
-      setGoogleToken(null);
-      setGoogleSpreadsheetId(null);
-      setSyncStatus("idle");
-      
-      // Reload from local storage
-      const saved = localStorage.getItem("finance_transactions");
-      if (saved) {
-        setTransactions(JSON.parse(saved));
-      } else {
-        setTransactions(INITIAL_TRANSACTIONS);
-      }
-      
-      const savedCats = localStorage.getItem("finance_categories");
-      if (savedCats) {
-        setCategories(JSON.parse(savedCats));
-      } else {
-        setCategories(DEFAULT_CATEGORIES);
-      }
-
-      const savedProjs = localStorage.getItem("finance_projects");
-      if (savedProjs) {
-        setProjects(JSON.parse(savedProjs));
-      } else {
-        setProjects([
-          { id: "proj-1", name: "Projeto Alfa" },
-          { id: "proj-2", name: "Projeto Beta" }
-        ]);
-      }
-    } catch (err) {
-      console.error("Erro ao desconectar Google:", err);
     }
   };
 
@@ -560,12 +504,11 @@ export default function App() {
     }
 
     // Persist immediately to Firestore
-    if (googleUser?.uid) {
-      try {
-        await saveTransactionToFirestore(googleUser.uid, targetTx);
-      } catch (err) {
-        console.error("Erro ao salvar transação no Firestore:", err);
-      }
+    try {
+      const effectiveUserId = googleUser?.uid || "apoena-admin";
+      await saveTransactionToFirestore(effectiveUserId, targetTx);
+    } catch (err) {
+      console.error("Erro ao salvar transação no Firestore:", err);
     }
   };
 
@@ -582,9 +525,10 @@ export default function App() {
       })
     );
 
-    if (googleUser?.uid && targetTx) {
+    if (targetTx) {
       try {
-        await saveTransactionToFirestore(googleUser.uid, targetTx);
+        const effectiveUserId = googleUser?.uid || "apoena-admin";
+        await saveTransactionToFirestore(effectiveUserId, targetTx);
       } catch (err) {
         console.error("Erro ao atualizar situação no Firestore:", err);
       }
@@ -602,12 +546,10 @@ export default function App() {
       setTransactions((prev) => prev.filter((t) => t.id !== idToDelete));
       setTransactionIdToDelete(null);
 
-      if (googleUser?.uid) {
-        try {
-          await deleteTransactionFromFirestore(idToDelete);
-        } catch (err) {
-          console.error("Erro ao excluir transação no Firestore:", err);
-        }
+      try {
+        await deleteTransactionFromFirestore(idToDelete);
+      } catch (err) {
+        console.error("Erro ao excluir transação no Firestore:", err);
       }
     }
   };
@@ -632,12 +574,11 @@ export default function App() {
     };
     setCategories((prev) => [...prev, newCat]);
 
-    if (googleUser?.uid) {
-      try {
-        await saveCategoryToFirestore(googleUser.uid, newCat);
-      } catch (err) {
-        console.error("Erro ao salvar categoria no Firestore:", err);
-      }
+    try {
+      const effectiveUserId = googleUser?.uid || "apoena-admin";
+      await saveCategoryToFirestore(effectiveUserId, newCat);
+    } catch (err) {
+      console.error("Erro ao salvar categoria no Firestore:", err);
     }
   };
 
@@ -657,12 +598,10 @@ export default function App() {
 
     setCategories((prev) => prev.filter((c) => c.id !== id));
 
-    if (googleUser?.uid) {
-      try {
-        await deleteCategoryFromFirestore(id);
-      } catch (err) {
-        console.error("Erro ao excluir categoria do Firestore:", err);
-      }
+    try {
+      await deleteCategoryFromFirestore(id);
+    } catch (err) {
+      console.error("Erro ao excluir categoria do Firestore:", err);
     }
   };
 
@@ -674,12 +613,11 @@ export default function App() {
     };
     setProjects((prev) => [...prev, newProj]);
 
-    if (googleUser?.uid) {
-      try {
-        await saveProjectToFirestore(googleUser.uid, newProj);
-      } catch (err) {
-        console.error("Erro ao salvar projeto no Firestore:", err);
-      }
+    try {
+      const effectiveUserId = googleUser?.uid || "apoena-admin";
+      await saveProjectToFirestore(effectiveUserId, newProj);
+    } catch (err) {
+      console.error("Erro ao salvar projeto no Firestore:", err);
     }
   };
 
@@ -707,12 +645,10 @@ export default function App() {
       setSelectedProjectFilter("todos");
     }
 
-    if (googleUser?.uid) {
-      try {
-        await deleteProjectFromFirestore(id);
-      } catch (err) {
-        console.error("Erro ao excluir projeto do Firestore:", err);
-      }
+    try {
+      await deleteProjectFromFirestore(id);
+    } catch (err) {
+      console.error("Erro ao excluir projeto do Firestore:", err);
     }
   };
 
@@ -871,7 +807,7 @@ export default function App() {
                   {firestoreStatus === "live" && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                      Em Tempo Real
+                      Conectado em Tempo Real
                     </span>
                   )}
                 </div>
@@ -880,8 +816,8 @@ export default function App() {
                     Banco de dados em nuvem conectado para <span className="font-semibold text-slate-700">{googleUser.email}</span>
                   </p>
                 ) : (
-                  <p className="text-[11px] text-slate-400">
-                    Conecte sua conta para sincronizar suas transações no Firebase Firestore.
+                  <p className="text-[11px] text-slate-500">
+                    Banco de dados Firebase conectado automaticamente em tempo real.
                   </p>
                 )}
               </div>
@@ -949,23 +885,16 @@ export default function App() {
                       </>
                     )}
                   </div>
-
-                  <button
-                    onClick={handleGoogleDisconnect}
-                    className="px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100/50 rounded-lg transition-colors cursor-pointer"
-                    title="Desconectar conta"
-                  >
-                    Desconectar
-                  </button>
                 </div>
               ) : (
                 <button
                   onClick={handleGoogleConnect}
                   disabled={syncStatus === "syncing"}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#009d7a] hover:bg-[#008264] text-white text-xs font-bold rounded-lg shadow-xs hover:shadow-sm transition-all cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition-all cursor-pointer"
+                  title="Vincular sua conta Google para sincronizar e fazer backup na planilha"
                 >
-                  <LucideIcon name="Chrome" size={13} />
-                  <span>Conectar Google / Firebase</span>
+                  <LucideIcon name="Table" size={13} className="text-emerald-600" />
+                  <span>Vincular Planilha Google (Opcional)</span>
                 </button>
               )}
             </div>
